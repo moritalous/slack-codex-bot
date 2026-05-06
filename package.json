@@ -1,0 +1,16 @@
+{
+	"name": "slack-codex-bot",
+	"module": "src/index.ts",
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"dev": "bun run src/index.ts",
+		"start": "bun run src/index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "latest"
+	},
+	"dependencies": {
+		"@slack/bolt": "^4.7.2"
+	}
+}
