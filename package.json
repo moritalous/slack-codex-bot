@@ -5,10 +5,16 @@
 	"private": true,
 	"scripts": {
 		"dev": "bun run src/index.ts",
-		"start": "bun run src/index.ts"
+		"start": "bun run src/index.ts",
+		"format": "biome format --write .",
+		"lint": "biome lint .",
+		"check": "biome check .",
+		"typecheck": "tsc --noEmit"
 	},
 	"devDependencies": {
-		"@types/bun": "latest"
+		"@biomejs/biome": "^2.4.14",
+		"@types/bun": "latest",
+		"typescript": "^6.0.3"
 	},
 	"dependencies": {
 		"@slack/bolt": "^4.7.2"
