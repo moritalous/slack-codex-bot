@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import readline from "node:readline";
+import { Codex } from "@openai/codex-sdk";
+import codexConfig from "../.codex/config.toml";
 import {
 	formatTranscript,
 	type SlackTranscriptMessage,
@@ -26,30 +26,15 @@ type CodexSessionRunnerOptions = {
 	workspacesRoot: string;
 };
 
-type CodexEvent =
-	| {
-			type: "thread.started";
-			thread_id: string;
-	  }
-	| {
-			type: "item.completed";
-			item: {
-				type: string;
-				text?: string;
-			};
-	  }
-	| {
-			type: "turn.completed";
-	  }
-	| {
-			type: "turn.failed";
-			error: {
-				message: string;
-			};
-	  };
-
 export class CodexSessionRunner {
-	constructor(private readonly options: CodexSessionRunnerOptions) {}
+	private readonly codex: Codex;
+
+	constructor(private readonly options: CodexSessionRunnerOptions) {
+		this.codex = new Codex({
+			env: process.env as Record<string, string>,
+			config: codexConfig,
+		});
+	}
 
 	async runNewConversation(
 		input: CodexConversationInput,
@@ -59,7 +44,7 @@ export class CodexSessionRunner {
 			input.channel,
 			input.rootThreadTs,
 		);
-		const result = await runCodexCli({
+		const result = await this.runCodexSdk({
 			prompt: buildTurnPrompt(input),
 			repoRoot: this.options.repoRoot,
 			workingDirectory: workspacePath,
@@ -77,7 +62,7 @@ export class CodexSessionRunner {
 		workspacePath: string,
 		input: CodexConversationInput,
 	): Promise<CodexSessionResult> {
-		const result = await runCodexCli({
+		const result = await this.runCodexSdk({
 			prompt: buildTurnPrompt(input),
 			repoRoot: this.options.repoRoot,
 			workingDirectory: workspacePath,
@@ -100,7 +85,7 @@ export class CodexSessionRunner {
 			input.channel,
 			input.rootThreadTs,
 		);
-		const result = await runCodexCli({
+		const result = await this.runCodexSdk({
 			prompt: buildHydrationPrompt(input, transcript),
 			repoRoot: this.options.repoRoot,
 			workingDirectory: workspacePath,
@@ -111,6 +96,55 @@ export class CodexSessionRunner {
 			codexThreadId: result.codexThreadId,
 			workspacePath,
 		};
+	}
+
+	private async runCodexSdk(options: {
+		prompt: string;
+		repoRoot: string;
+		workingDirectory: string;
+		threadId?: string;
+	}): Promise<{ codexThreadId: string; responseText: string }> {
+		const threadOptions = {
+			workingDirectory: options.workingDirectory,
+			skipGitRepoCheck: true,
+			sandboxMode: "workspace-write" as const,
+			approvalPolicy: "never" as const,
+			additionalDirectories: [options.repoRoot],
+			webSearchMode: "disabled" as const,
+		};
+
+		const thread = options.threadId
+			? this.codex.resumeThread(options.threadId, threadOptions)
+			: this.codex.startThread(threadOptions);
+
+		const { events } = await thread.runStreamed(options.prompt);
+
+		let responseText = "";
+		let turnFailedMessage: string | null = null;
+
+		for await (const event of events) {
+			if (event.type === "turn.failed") {
+				turnFailedMessage = event.error.message;
+			}
+			if (
+				event.type === "item.completed" &&
+				event.item.type === "agent_message" &&
+				"text" in event.item
+			) {
+				responseText = event.item.text;
+			}
+		}
+
+		if (turnFailedMessage) {
+			throw new Error(turnFailedMessage);
+		}
+
+		const codexThreadId = thread.id;
+		if (!codexThreadId) {
+			throw new Error("Codex did not produce a thread id");
+		}
+
+		return { codexThreadId, responseText: responseText.trim() };
 	}
 }
 
@@ -168,119 +202,4 @@ function buildHydrationPrompt(
 		"Slack thread transcript:",
 		formattedTranscript,
 	].join("\n");
-}
-
-async function runCodexCli(options: {
-	prompt: string;
-	repoRoot: string;
-	workingDirectory: string;
-	threadId?: string;
-}): Promise<{ codexThreadId: string; responseText: string }> {
-	const args = [
-		"exec",
-		"--json",
-		"--skip-git-repo-check",
-		"--sandbox",
-		"workspace-write",
-		"--cd",
-		options.workingDirectory,
-		"--add-dir",
-		options.repoRoot,
-		"--config",
-		'approval_policy="never"',
-	] as string[];
-
-	if (options.threadId) {
-		args.push("resume", options.threadId);
-	}
-
-	const child = spawn("codex", args, {
-		stdio: ["pipe", "pipe", "pipe"],
-		env: process.env,
-	});
-
-	child.stdin.write(options.prompt);
-	child.stdin.end();
-
-	if (!child.stdout || !child.stderr) {
-		child.kill();
-		throw new Error("Failed to access Codex process streams");
-	}
-
-	const stderrChunks: Buffer[] = [];
-	child.stderr.on("data", (chunk: Buffer) => {
-		stderrChunks.push(chunk);
-	});
-
-	let codexThreadId: string | null = null;
-	let responseText = "";
-	let turnFailedMessage: string | null = null;
-
-	const rl = readline.createInterface({
-		input: child.stdout,
-		crlfDelay: Infinity,
-	});
-
-	for await (const line of rl) {
-		const event = tryParseCodexEvent(line);
-		if (!event) {
-			continue;
-		}
-
-		if (event.type === "thread.started") {
-			codexThreadId = event.thread_id;
-			continue;
-		}
-
-		if (
-			event.type === "item.completed" &&
-			event.item.type === "agent_message" &&
-			typeof event.item.text === "string"
-		) {
-			responseText = event.item.text;
-			continue;
-		}
-
-		if (event.type === "turn.failed") {
-			turnFailedMessage = event.error.message;
-		}
-	}
-
-	const exitCode = await new Promise<number | null>((resolve) => {
-		child.once("exit", (code) => resolve(code));
-	});
-
-	if (turnFailedMessage) {
-		throw new Error(turnFailedMessage);
-	}
-
-	if (!codexThreadId) {
-		const stderr = Buffer.concat(stderrChunks).toString("utf8");
-		throw new Error(
-			`Codex did not produce a thread id${stderr ? `: ${stderr}` : ""}`,
-		);
-	}
-
-	if (exitCode !== 0) {
-		const stderr = Buffer.concat(stderrChunks).toString("utf8");
-		throw new Error(`Codex exited with code ${exitCode ?? -1}: ${stderr}`);
-	}
-
-	return {
-		codexThreadId,
-		responseText: responseText.trim(),
-	};
-}
-
-function tryParseCodexEvent(line: string): CodexEvent | null {
-	const trimmed = line.trim();
-	if (!trimmed.startsWith("{")) {
-		return null;
-	}
-
-	try {
-		return JSON.parse(trimmed) as CodexEvent;
-	} catch {
-		return null;
-	}
 }
