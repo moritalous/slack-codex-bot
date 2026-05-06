@@ -1,5 +1,4 @@
 import { mkdir } from "node:fs/promises";
-import path from "node:path";
 import { Codex } from "@openai/codex-sdk";
 import codexConfig from "../.codex/config.toml";
 import {
@@ -39,11 +38,7 @@ export class CodexSessionRunner {
 	async runNewConversation(
 		input: CodexConversationInput,
 	): Promise<CodexSessionResult> {
-		const workspacePath = await ensureWorkspace(
-			this.options.workspacesRoot,
-			input.channel,
-			input.rootThreadTs,
-		);
+		const workspacePath = await ensureWorkspace(this.options.workspacesRoot);
 		const result = await this.runCodexSdk({
 			prompt: buildTurnPrompt(input),
 			repoRoot: this.options.repoRoot,
@@ -80,11 +75,7 @@ export class CodexSessionRunner {
 		input: CodexConversationInput,
 		transcript: SlackTranscriptMessage[],
 	): Promise<CodexSessionResult> {
-		const workspacePath = await ensureWorkspace(
-			this.options.workspacesRoot,
-			input.channel,
-			input.rootThreadTs,
-		);
+		const workspacePath = await ensureWorkspace(this.options.workspacesRoot);
 		const result = await this.runCodexSdk({
 			prompt: buildHydrationPrompt(input, transcript),
 			repoRoot: this.options.repoRoot,
@@ -148,21 +139,9 @@ export class CodexSessionRunner {
 	}
 }
 
-async function ensureWorkspace(
-	workspacesRoot: string,
-	channel: string,
-	rootThreadTs: string,
-): Promise<string> {
-	const workspaceName = `${sanitizeForPath(channel)}-${sanitizeForPath(rootThreadTs)}`;
-	const workspacePath = path.join(workspacesRoot, workspaceName);
-
-	await mkdir(workspacePath, { recursive: true });
-
-	return workspacePath;
-}
-
-function sanitizeForPath(value: string): string {
-	return value.replace(/[^a-zA-Z0-9_-]/g, "_");
+async function ensureWorkspace(workspacesRoot: string): Promise<string> {
+	await mkdir(workspacesRoot, { recursive: true });
+	return workspacesRoot;
 }
 
 function buildTurnPrompt(input: CodexConversationInput): string {
