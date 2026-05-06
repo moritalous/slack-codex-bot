@@ -20,6 +20,7 @@
 		"typescript": "^6.0.3"
 	},
 	"dependencies": {
+		"@openai/codex-sdk": "^0.128.0",
 		"@slack/bolt": "^4.7.2"
 	}
 }
