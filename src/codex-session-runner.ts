@@ -100,11 +100,6 @@ export class CodexSessionRunner {
 			skipGitRepoCheck: true,
 			sandboxMode: "danger-full-access" as const,
 			approvalPolicy: "never" as const,
-			additionalDirectories: [
-				options.repoRoot,
-				`${this.options.workspacesRoot}/.agents/skills`,
-			],
-			webSearchMode: "disabled" as const,
 		};
 
 		console.error(
