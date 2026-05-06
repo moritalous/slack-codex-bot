@@ -27,6 +27,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .cache
 .local
 workspaces
+!workspaces/.agents/
+!workspaces/.agents/skills/
+!workspaces/.agents/skills/**
 *.tsbuildinfo
 
 # IntelliJ based IDEs
