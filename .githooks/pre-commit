@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+echo "Running Gitleaks on staged changes..."
+bun run scan:secrets:staged

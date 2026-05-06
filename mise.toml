@@ -1,0 +1,6 @@
+[tools]
+bun = "latest"
+gitleaks = "latest"
+
+[env]
+_.file = ".env"

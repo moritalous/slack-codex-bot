@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+echo "Running Gitleaks before push..."
+bun run scan:secrets:git
+
+echo "Running Biome checks before push..."
+bun run check
+
+echo "Running TypeScript typecheck before push..."
+bun run typecheck
