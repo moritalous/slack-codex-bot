@@ -122,6 +122,10 @@ async function handleConversation(
 	let placeholderTs: string | undefined;
 
 	try {
+		console.error(
+			`[slack] Handling conversation: ${context.channel} / ${context.rootThreadTs}`,
+		);
+
 		const placeholder = await client.chat.postMessage({
 			channel: context.channel,
 			thread_ts: context.rootThreadTs,
@@ -131,12 +135,17 @@ async function handleConversation(
 			throw new Error("Slack placeholder message ts was missing");
 		}
 		placeholderTs = placeholder.ts;
+		console.error(`[slack] Placeholder posted: ${placeholderTs}`);
 
+		console.error(`[slack] Calling resolveCodexResponse...`);
 		const result = await resolveCodexResponse(
 			client,
 			botIdentity,
 			conversationKey,
 			context,
+		);
+		console.error(
+			`[slack] Got response: ${result.responseText.substring(0, 100)}...`,
 		);
 
 		await client.chat.update({
@@ -145,7 +154,9 @@ async function handleConversation(
 			text:
 				result.responseText || "空の応答は返せないため、回答を省略しました。",
 		});
+		console.error(`[slack] Response posted`);
 	} catch (error) {
+		console.error(`[slack] Error:`, error);
 		app.logger.error("Failed to handle Slack conversation", error);
 
 		if (placeholderTs) {

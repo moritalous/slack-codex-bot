@@ -98,24 +98,35 @@ export class CodexSessionRunner {
 		const threadOptions = {
 			workingDirectory: options.workingDirectory,
 			skipGitRepoCheck: true,
-			sandboxMode: "workspace-write" as const,
+			sandboxMode: "danger-full-access" as const,
 			approvalPolicy: "never" as const,
-			additionalDirectories: [options.repoRoot],
+			additionalDirectories: [
+				options.repoRoot,
+				`${this.options.workspacesRoot}/.agents/skills`,
+			],
 			webSearchMode: "disabled" as const,
 		};
+
+		console.error(
+			`[codex] ${options.threadId ? "Resuming" : "Starting"} thread in ${options.workingDirectory}`,
+		);
 
 		const thread = options.threadId
 			? this.codex.resumeThread(options.threadId, threadOptions)
 			: this.codex.startThread(threadOptions);
 
+		console.error(`[codex] Running prompt...`);
 		const { events } = await thread.runStreamed(options.prompt);
 
 		let responseText = "";
 		let turnFailedMessage: string | null = null;
 
 		for await (const event of events) {
+			console.error(`[codex] Event: ${event.type}`);
+
 			if (event.type === "turn.failed") {
 				turnFailedMessage = event.error.message;
+				console.error(`[codex] Turn failed: ${turnFailedMessage}`);
 			}
 			if (
 				event.type === "item.completed" &&
@@ -123,6 +134,9 @@ export class CodexSessionRunner {
 				"text" in event.item
 			) {
 				responseText = event.item.text;
+				console.error(
+					`[codex] Got response: ${responseText.substring(0, 100)}...`,
+				);
 			}
 		}
 
@@ -134,6 +148,9 @@ export class CodexSessionRunner {
 		if (!codexThreadId) {
 			throw new Error("Codex did not produce a thread id");
 		}
+
+		console.error(`[codex] Thread ID: ${codexThreadId}`);
+		console.error(`[codex] Response length: ${responseText.length}`);
 
 		return { codexThreadId, responseText: responseText.trim() };
 	}
