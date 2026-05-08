@@ -23,6 +23,7 @@
 		"typescript": "^6.0.3"
 	},
 	"dependencies": {
+		"@n8n/cli": "^0.5.0",
 		"@openai/codex-sdk": "0.120.0",
 		"@slack/bolt": "^4.7.2"
 	}
