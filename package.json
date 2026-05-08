@@ -13,7 +13,9 @@
 		"scan:secrets": "mise exec -- gitleaks dir .",
 		"scan:secrets:git": "mise exec -- gitleaks git .",
 		"scan:secrets:staged": "mise exec -- gitleaks git . --staged",
-		"codex": "mise exec -- bunx codex"
+		"codex": "mise exec -- bunx codex",
+		"n8n:start": "bun run --filter 'n8n*' n8n:start",
+		"n8n:stop": "bun run --filter 'n8n*' n8n:stop"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.14",

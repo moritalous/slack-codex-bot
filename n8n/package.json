@@ -1,0 +1,8 @@
+{
+	"name": "n8n-docker",
+	"private": true,
+	"scripts": {
+		"n8n:start": "docker compose up -d",
+		"n8n:stop": "docker compose down"
+	}
+}
