@@ -2,9 +2,9 @@ import type { App, SlackEventMiddlewareArgs } from "@slack/bolt";
 import type { MessageEvent } from "@slack/types";
 import type { WebClient } from "@slack/web-api";
 import {
-	type CodexConversationInput,
-	CodexSessionRunner,
-} from "./codex-session-runner";
+	type ClaudeConversationInput,
+	ClaudeSessionRunner,
+} from "./claude-session-runner";
 import { repoRoot, threadStateFilePath, workspacesRoot } from "./paths";
 import { fetchSlackTranscript } from "./slack-transcript";
 import { ThreadStateStore } from "./thread-state-store";
@@ -28,7 +28,7 @@ type BotIdentity = {
 };
 
 const stateStore = new ThreadStateStore(threadStateFilePath);
-const codexRunner = new CodexSessionRunner({
+const claudeRunner = new ClaudeSessionRunner({
 	repoRoot,
 	workspacesRoot,
 });
@@ -138,7 +138,7 @@ async function handleConversation(
 		console.error(`[slack] Placeholder posted: ${placeholderTs}`);
 
 		console.error(`[slack] Calling resolveClaudeResponse...`);
-		const result = await resolveCodexResponse(
+		const result = await resolveClaudeResponse(
 			client,
 			botIdentity,
 			conversationKey,
@@ -187,14 +187,14 @@ async function handleConversation(
 	}
 }
 
-async function resolveCodexResponse(
+async function resolveClaudeResponse(
 	client: WebClient,
 	botIdentity: BotIdentity,
 	conversationKey: string,
 	context: ConversationContext,
 ) {
 	const storedState = await stateStore.get(conversationKey);
-	const codexInput: CodexConversationInput = {
+	const claudeInput: ClaudeConversationInput = {
 		channel: context.channel,
 		rootThreadTs: context.rootThreadTs,
 		messageTs: context.messageTs,
@@ -208,11 +208,11 @@ async function resolveCodexResponse(
 				client,
 				botIdentity,
 				conversationKey,
-				codexInput,
+				claudeInput,
 			);
 		}
 
-		const result = await codexRunner.runNewConversation(codexInput);
+		const result = await claudeRunner.runNewConversation(claudeInput);
 		await persistState(
 			conversationKey,
 			result.claudeSessionId,
@@ -224,10 +224,10 @@ async function resolveCodexResponse(
 	}
 
 	try {
-		const result = await codexRunner.runExistingConversation(
+		const result = await claudeRunner.runExistingConversation(
 			storedState.claudeSessionId,
 			storedState.workspacePath,
-			codexInput,
+			claudeInput,
 		);
 		await persistState(
 			conversationKey,
@@ -242,7 +242,7 @@ async function resolveCodexResponse(
 			client,
 			botIdentity,
 			conversationKey,
-			codexInput,
+			claudeInput,
 		);
 	}
 }
@@ -251,7 +251,7 @@ async function rebuildFromSlackTranscript(
 	client: WebClient,
 	botIdentity: BotIdentity,
 	conversationKey: string,
-	input: CodexConversationInput,
+	input: ClaudeConversationInput,
 ) {
 	const transcript = await fetchSlackTranscript(
 		client,
@@ -259,7 +259,7 @@ async function rebuildFromSlackTranscript(
 		input.rootThreadTs,
 		botIdentity.userId,
 	);
-	const result = await codexRunner.rebuildConversationFromTranscript(
+	const result = await claudeRunner.rebuildConversationFromTranscript(
 		input,
 		transcript,
 	);

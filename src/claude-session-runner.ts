@@ -7,7 +7,7 @@ import {
 	type SlackTranscriptMessage,
 } from "./slack-transcript";
 
-export type CodexConversationInput = {
+export type ClaudeConversationInput = {
 	channel: string;
 	rootThreadTs: string;
 	messageTs: string;
@@ -15,25 +15,25 @@ export type CodexConversationInput = {
 	text: string;
 };
 
-export type CodexSessionResult = {
+export type ClaudeSessionResult = {
 	responseText: string;
 	claudeSessionId: string;
 	workspacePath: string;
 };
 
-type CodexSessionRunnerOptions = {
+type ClaudeSessionRunnerOptions = {
 	repoRoot: string;
 	workspacesRoot: string;
 };
 
 const claudeBin = path.join(repoRoot, "node_modules", ".bin", "claude");
 
-export class CodexSessionRunner {
-	constructor(private readonly options: CodexSessionRunnerOptions) {}
+export class ClaudeSessionRunner {
+	constructor(private readonly options: ClaudeSessionRunnerOptions) {}
 
 	async runNewConversation(
-		input: CodexConversationInput,
-	): Promise<CodexSessionResult> {
+		input: ClaudeConversationInput,
+	): Promise<ClaudeSessionResult> {
 		const workspacePath = await ensureWorkspace(this.options.workspacesRoot);
 		const result = await this.runClaudeSdk({
 			prompt: buildTurnPrompt(input),
@@ -50,8 +50,8 @@ export class CodexSessionRunner {
 	async runExistingConversation(
 		sessionId: string,
 		workspacePath: string,
-		input: CodexConversationInput,
-	): Promise<CodexSessionResult> {
+		input: ClaudeConversationInput,
+	): Promise<ClaudeSessionResult> {
 		const result = await this.runClaudeSdk({
 			prompt: buildTurnPrompt(input),
 			workingDirectory: workspacePath,
@@ -66,9 +66,9 @@ export class CodexSessionRunner {
 	}
 
 	async rebuildConversationFromTranscript(
-		input: CodexConversationInput,
+		input: ClaudeConversationInput,
 		transcript: SlackTranscriptMessage[],
-	): Promise<CodexSessionResult> {
+	): Promise<ClaudeSessionResult> {
 		const workspacePath = await ensureWorkspace(this.options.workspacesRoot);
 		const result = await this.runClaudeSdk({
 			prompt: buildHydrationPrompt(input, transcript),
@@ -201,7 +201,7 @@ async function ensureWorkspace(workspacesRoot: string): Promise<string> {
 	return workspacesRoot;
 }
 
-function buildTurnPrompt(input: CodexConversationInput): string {
+function buildTurnPrompt(input: ClaudeConversationInput): string {
 	return [
 		"You are a Slack assistant replying inside an existing Slack thread.",
 		"Use the prior conversation context when available.",
@@ -219,7 +219,7 @@ function buildTurnPrompt(input: CodexConversationInput): string {
 }
 
 function buildHydrationPrompt(
-	input: CodexConversationInput,
+	input: ClaudeConversationInput,
 	transcript: SlackTranscriptMessage[],
 ): string {
 	const formattedTranscript = formatTranscript(transcript);

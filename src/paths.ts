@@ -8,5 +8,5 @@ export const workspacesRoot = path.join(repoRoot, "workspaces");
 export const localStateRoot = path.join(repoRoot, ".local", "state");
 export const threadStateFilePath = path.join(
 	localStateRoot,
-	"slack-codex-threads.json",
+	"slack-claude-threads.json",
 );
