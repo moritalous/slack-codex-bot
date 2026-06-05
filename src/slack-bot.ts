@@ -137,7 +137,7 @@ async function handleConversation(
 		placeholderTs = placeholder.ts;
 		console.error(`[slack] Placeholder posted: ${placeholderTs}`);
 
-		console.error(`[slack] Calling resolveCodexResponse...`);
+		console.error(`[slack] Calling resolveClaudeResponse...`);
 		const result = await resolveCodexResponse(
 			client,
 			botIdentity,
@@ -215,7 +215,7 @@ async function resolveCodexResponse(
 		const result = await codexRunner.runNewConversation(codexInput);
 		await persistState(
 			conversationKey,
-			result.codexThreadId,
+			result.claudeSessionId,
 			result.workspacePath,
 			context,
 		);
@@ -225,13 +225,13 @@ async function resolveCodexResponse(
 
 	try {
 		const result = await codexRunner.runExistingConversation(
-			storedState.codexThreadId,
+			storedState.claudeSessionId,
 			storedState.workspacePath,
 			codexInput,
 		);
 		await persistState(
 			conversationKey,
-			result.codexThreadId,
+			result.claudeSessionId,
 			result.workspacePath,
 			context,
 		);
@@ -265,7 +265,7 @@ async function rebuildFromSlackTranscript(
 	);
 	await persistState(
 		conversationKey,
-		result.codexThreadId,
+		result.claudeSessionId,
 		result.workspacePath,
 		input,
 	);
@@ -275,7 +275,7 @@ async function rebuildFromSlackTranscript(
 
 async function persistState(
 	conversationKey: string,
-	codexThreadId: string,
+	claudeSessionId: string,
 	workspacePath: string,
 	context: Pick<ConversationContext, "channel" | "rootThreadTs">,
 ): Promise<void> {
@@ -285,7 +285,7 @@ async function persistState(
 	await stateStore.set(conversationKey, {
 		channel: context.channel,
 		rootThreadTs: context.rootThreadTs,
-		codexThreadId,
+		claudeSessionId,
 		workspacePath,
 		createdAt: existing?.createdAt ?? now,
 		updatedAt: now,

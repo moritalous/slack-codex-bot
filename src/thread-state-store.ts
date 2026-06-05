@@ -4,7 +4,7 @@ import path from "node:path";
 export type ThreadState = {
 	channel: string;
 	rootThreadTs: string;
-	codexThreadId: string;
+	claudeSessionId: string;
 	workspacePath: string;
 	createdAt: string;
 	updatedAt: string;

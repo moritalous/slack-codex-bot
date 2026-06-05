@@ -1,6 +1,7 @@
+import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
-import { Codex } from "@openai/codex-sdk";
-import codexConfig from "../.codex/config.toml";
+import path from "node:path";
+import { repoRoot } from "./paths";
 import {
 	formatTranscript,
 	type SlackTranscriptMessage,
@@ -16,7 +17,7 @@ export type CodexConversationInput = {
 
 export type CodexSessionResult = {
 	responseText: string;
-	codexThreadId: string;
+	claudeSessionId: string;
 	workspacePath: string;
 };
 
@@ -25,48 +26,41 @@ type CodexSessionRunnerOptions = {
 	workspacesRoot: string;
 };
 
-export class CodexSessionRunner {
-	private readonly codex: Codex;
+const claudeBin = path.join(repoRoot, "node_modules", ".bin", "claude");
 
-	constructor(private readonly options: CodexSessionRunnerOptions) {
-		this.codex = new Codex({
-			env: process.env as Record<string, string>,
-			config: codexConfig,
-		});
-	}
+export class CodexSessionRunner {
+	constructor(private readonly options: CodexSessionRunnerOptions) {}
 
 	async runNewConversation(
 		input: CodexConversationInput,
 	): Promise<CodexSessionResult> {
 		const workspacePath = await ensureWorkspace(this.options.workspacesRoot);
-		const result = await this.runCodexSdk({
+		const result = await this.runClaudeSdk({
 			prompt: buildTurnPrompt(input),
-			repoRoot: this.options.repoRoot,
 			workingDirectory: workspacePath,
 		});
 
 		return {
 			responseText: result.responseText,
-			codexThreadId: result.codexThreadId,
+			claudeSessionId: result.claudeSessionId,
 			workspacePath,
 		};
 	}
 
 	async runExistingConversation(
-		threadId: string,
+		sessionId: string,
 		workspacePath: string,
 		input: CodexConversationInput,
 	): Promise<CodexSessionResult> {
-		const result = await this.runCodexSdk({
+		const result = await this.runClaudeSdk({
 			prompt: buildTurnPrompt(input),
-			repoRoot: this.options.repoRoot,
 			workingDirectory: workspacePath,
-			threadId,
+			sessionId,
 		});
 
 		return {
 			responseText: result.responseText,
-			codexThreadId: result.codexThreadId,
+			claudeSessionId: result.claudeSessionId,
 			workspacePath,
 		};
 	}
@@ -76,78 +70,129 @@ export class CodexSessionRunner {
 		transcript: SlackTranscriptMessage[],
 	): Promise<CodexSessionResult> {
 		const workspacePath = await ensureWorkspace(this.options.workspacesRoot);
-		const result = await this.runCodexSdk({
+		const result = await this.runClaudeSdk({
 			prompt: buildHydrationPrompt(input, transcript),
-			repoRoot: this.options.repoRoot,
 			workingDirectory: workspacePath,
 		});
 
 		return {
 			responseText: result.responseText,
-			codexThreadId: result.codexThreadId,
+			claudeSessionId: result.claudeSessionId,
 			workspacePath,
 		};
 	}
 
-	private async runCodexSdk(options: {
+	private runClaudeSdk(options: {
 		prompt: string;
-		repoRoot: string;
 		workingDirectory: string;
-		threadId?: string;
-	}): Promise<{ codexThreadId: string; responseText: string }> {
-		const threadOptions = {
-			workingDirectory: options.workingDirectory,
-			skipGitRepoCheck: true,
-			sandboxMode: "danger-full-access" as const,
-			approvalPolicy: "never" as const,
-		};
-
+		sessionId?: string;
+	}): Promise<{ claudeSessionId: string; responseText: string }> {
 		console.error(
-			`[codex] ${options.threadId ? "Resuming" : "Starting"} thread in ${options.workingDirectory}`,
+			`[claude] ${options.sessionId ? "Resuming" : "Starting"} session in ${options.workingDirectory}`,
 		);
 
-		const thread = options.threadId
-			? this.codex.resumeThread(options.threadId, threadOptions)
-			: this.codex.startThread(threadOptions);
+		const args = [
+			"--print",
+			"--output-format",
+			"stream-json",
+			"--dangerously-skip-permissions",
+			"--input-format",
+			"text",
+		];
 
-		console.error(`[codex] Running prompt...`);
-		const { events } = await thread.runStreamed(options.prompt);
-
-		let responseText = "";
-		let turnFailedMessage: string | null = null;
-
-		for await (const event of events) {
-			console.error(`[codex] Event: ${event.type}`);
-
-			if (event.type === "turn.failed") {
-				turnFailedMessage = event.error.message;
-				console.error(`[codex] Turn failed: ${turnFailedMessage}`);
-			}
-			if (
-				event.type === "item.completed" &&
-				event.item.type === "agent_message" &&
-				"text" in event.item
-			) {
-				responseText = event.item.text;
-				console.error(
-					`[codex] Got response: ${responseText.substring(0, 100)}...`,
-				);
-			}
+		if (options.sessionId) {
+			args.push("--resume", options.sessionId);
 		}
 
-		if (turnFailedMessage) {
-			throw new Error(turnFailedMessage);
-		}
+		return new Promise((resolve, reject) => {
+			const proc = spawn(claudeBin, args, {
+				cwd: options.workingDirectory,
+				env: process.env,
+			});
 
-		const codexThreadId = thread.id;
-		if (!codexThreadId) {
-			throw new Error("Codex did not produce a thread id");
-		}
+			proc.stdin.write(options.prompt);
+			proc.stdin.end();
 
-		console.error(`[codex] Thread ID: ${codexThreadId}`);
-		console.error(`[codex] Response length: ${responseText.length}`);
+			let buffer = "";
+			let claudeSessionId = "";
+			let responseText = "";
+			let rejected = false;
 
-		return { codexThreadId, responseText: responseText.trim() };
+			proc.stdout.on("data", (chunk: Buffer) => {
+				buffer += chunk.toString();
+				const lines = buffer.split("\n");
+				buffer = lines.pop() ?? "";
+
+				for (const line of lines) {
+					if (!line.trim()) continue;
+					let msg: Record<string, unknown>;
+					try {
+						msg = JSON.parse(line) as Record<string, unknown>;
+					} catch {
+						continue;
+					}
+
+					console.error(`[claude] Message: ${msg.type}`);
+
+					if (msg.type === "system" && msg.subtype === "init") {
+						claudeSessionId = msg.session_id as string;
+						console.error(`[claude] Session ID: ${claudeSessionId}`);
+					}
+
+					if (msg.type === "assistant") {
+						const message = msg.message as {
+							content: Array<{ type: string; text?: string }>;
+						};
+						for (const block of message.content) {
+							if (block.type === "text" && block.text) {
+								responseText = block.text;
+							}
+						}
+					}
+
+					if (msg.type === "result") {
+						if (msg.subtype !== "success") {
+							rejected = true;
+							reject(
+								new Error(`Claude session ended with error: ${msg.subtype}`),
+							);
+							return;
+						}
+						if (msg.result) {
+							responseText = msg.result as string;
+						}
+					}
+				}
+			});
+
+			proc.stderr.on("data", (chunk: Buffer) => {
+				console.error(`[claude stderr] ${chunk.toString().trimEnd()}`);
+			});
+
+			proc.on("error", (err) => {
+				if (!rejected) {
+					rejected = true;
+					reject(err);
+				}
+			});
+
+			proc.on("close", (code) => {
+				if (rejected) return;
+
+				if (code !== 0) {
+					reject(new Error(`Claude process exited with code ${code}`));
+					return;
+				}
+
+				if (!claudeSessionId) {
+					reject(new Error("Claude did not produce a session id"));
+					return;
+				}
+
+				console.error(`[claude] Response length: ${responseText.trim().length}`);
+				resolve({ claudeSessionId, responseText: responseText.trim() });
+			});
+		});
 	}
 }
 
@@ -159,7 +204,7 @@ async function ensureWorkspace(workspacesRoot: string): Promise<string> {
 function buildTurnPrompt(input: CodexConversationInput): string {
 	return [
 		"You are a Slack assistant replying inside an existing Slack thread.",
-		"Use the prior Codex conversation context when available.",
+		"Use the prior conversation context when available.",
 		"Reply with only the message body that should be posted back to Slack.",
 		"",
 		"source=slack",
