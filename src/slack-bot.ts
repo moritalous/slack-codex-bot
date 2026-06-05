@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { App, SlackEventMiddlewareArgs } from "@slack/bolt";
 import type { MessageEvent } from "@slack/types";
 import type { WebClient } from "@slack/web-api";
@@ -6,7 +7,11 @@ import {
 	ClaudeSessionRunner,
 } from "./claude-session-runner";
 import { repoRoot, threadStateFilePath, workspacesRoot } from "./paths";
-import { fetchSlackTranscript } from "./slack-transcript";
+import {
+	type SlackFile,
+	downloadSlackFiles,
+	fetchSlackTranscript,
+} from "./slack-transcript";
 import { ThreadStateStore } from "./thread-state-store";
 
 const placeholderText = "考え中です...";
@@ -21,6 +26,7 @@ type ConversationContext = {
 	messageTs: string;
 	userId: string;
 	text: string;
+	files?: SlackFile[];
 };
 
 type BotIdentity = {
@@ -90,6 +96,7 @@ function getDmContext(message: MessageEvent): ConversationContext | null {
 		messageTs: message.ts,
 		userId: message.user,
 		text: message.text.trim(),
+		files: extractFiles(message),
 	};
 }
 
@@ -105,7 +112,30 @@ function getMentionContext(event: AppMentionEvent): ConversationContext | null {
 		messageTs: event.ts,
 		userId: event.user,
 		text: sanitizedText,
+		files: extractFiles(event),
 	};
+}
+
+function extractFiles(event: object): SlackFile[] | undefined {
+	const raw = (event as { files?: unknown[] }).files;
+	if (!raw?.length) return undefined;
+
+	const result = (raw as Array<Record<string, unknown>>)
+		.filter(
+			(f): f is Record<string, unknown> & { id: string; url_private: string } =>
+				typeof f.id === "string" && typeof f.url_private === "string",
+		)
+		.map((f) => ({
+			id: f.id,
+			name: typeof f.name === "string" ? f.name : null,
+			mimetype:
+				typeof f.mimetype === "string"
+					? f.mimetype
+					: "application/octet-stream",
+			urlPrivate: f.url_private,
+		}));
+
+	return result.length ? result : undefined;
 }
 
 async function handleConversation(
@@ -137,12 +167,14 @@ async function handleConversation(
 		placeholderTs = placeholder.ts;
 		console.error(`[slack] Placeholder posted: ${placeholderTs}`);
 
+		const claudeInput = await buildClaudeInput(context);
+
 		console.error(`[slack] Calling resolveClaudeResponse...`);
 		const result = await resolveClaudeResponse(
 			client,
 			botIdentity,
 			conversationKey,
-			context,
+			claudeInput,
 		);
 		console.error(
 			`[slack] Got response: ${result.responseText.substring(0, 100)}...`,
@@ -187,14 +219,10 @@ async function handleConversation(
 	}
 }
 
-async function resolveClaudeResponse(
-	client: WebClient,
-	botIdentity: BotIdentity,
-	conversationKey: string,
+async function buildClaudeInput(
 	context: ConversationContext,
-) {
-	const storedState = await stateStore.get(conversationKey);
-	const claudeInput: ClaudeConversationInput = {
+): Promise<ClaudeConversationInput> {
+	const base: ClaudeConversationInput = {
 		channel: context.channel,
 		rootThreadTs: context.rootThreadTs,
 		messageTs: context.messageTs,
@@ -202,17 +230,47 @@ async function resolveClaudeResponse(
 		text: context.text,
 	};
 
+	if (!context.files?.length) {
+		return base;
+	}
+
+	const token = process.env.SLACK_BOT_TOKEN;
+	if (!token) {
+		console.error("[slack] SLACK_BOT_TOKEN not set; skipping file download");
+		return base;
+	}
+
+	const attachmentDir = path.join(workspacesRoot, context.messageTs);
+	const attachmentFiles = await downloadSlackFiles(
+		context.files,
+		attachmentDir,
+		token,
+	);
+
+	return attachmentFiles.length
+		? { ...base, attachmentDir, attachmentFiles }
+		: base;
+}
+
+async function resolveClaudeResponse(
+	client: WebClient,
+	botIdentity: BotIdentity,
+	conversationKey: string,
+	context: ClaudeConversationInput,
+) {
+	const storedState = await stateStore.get(conversationKey);
+
 	if (!storedState) {
 		if (context.rootThreadTs !== context.messageTs) {
 			return await rebuildFromSlackTranscript(
 				client,
 				botIdentity,
 				conversationKey,
-				claudeInput,
+				context,
 			);
 		}
 
-		const result = await claudeRunner.runNewConversation(claudeInput);
+		const result = await claudeRunner.runNewConversation(context);
 		await persistState(
 			conversationKey,
 			result.claudeSessionId,
@@ -227,7 +285,7 @@ async function resolveClaudeResponse(
 		const result = await claudeRunner.runExistingConversation(
 			storedState.claudeSessionId,
 			storedState.workspacePath,
-			claudeInput,
+			context,
 		);
 		await persistState(
 			conversationKey,
@@ -242,7 +300,7 @@ async function resolveClaudeResponse(
 			client,
 			botIdentity,
 			conversationKey,
-			claudeInput,
+			context,
 		);
 	}
 }
@@ -277,7 +335,7 @@ async function persistState(
 	conversationKey: string,
 	claudeSessionId: string,
 	workspacePath: string,
-	context: Pick<ConversationContext, "channel" | "rootThreadTs">,
+	context: Pick<ClaudeConversationInput, "channel" | "rootThreadTs">,
 ): Promise<void> {
 	const now = new Date().toISOString();
 	const existing = await stateStore.get(conversationKey);

@@ -1,9 +1,7 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { MessageParam } from "@anthropic-ai/sdk/resources";
 import { mkdir } from "node:fs/promises";
-import {
-	formatTranscript,
-	type SlackTranscriptMessage,
-} from "./slack-transcript";
+import type { SlackTranscriptMessage } from "./slack-transcript";
 
 export type ClaudeConversationInput = {
 	channel: string;
@@ -11,6 +9,8 @@ export type ClaudeConversationInput = {
 	messageTs: string;
 	userId: string;
 	text: string;
+	attachmentDir?: string;
+	attachmentFiles?: string[];
 };
 
 export type ClaudeSessionResult = {
@@ -24,6 +24,11 @@ type ClaudeSessionRunnerOptions = {
 	workspacesRoot: string;
 };
 
+const SYSTEM_PROMPT = [
+	"You are a Slack assistant replying inside a Slack thread.",
+	"Reply with only the message body to be posted back to Slack.",
+].join("\n");
+
 export class ClaudeSessionRunner {
 	constructor(private readonly options: ClaudeSessionRunnerOptions) {}
 
@@ -32,10 +37,9 @@ export class ClaudeSessionRunner {
 	): Promise<ClaudeSessionResult> {
 		const workspacePath = await ensureWorkspace(this.options.workspacesRoot);
 		const result = await runQuery({
-			prompt: buildTurnPrompt(input),
+			prompt: singleTurnMessages(input),
 			workspacePath,
 		});
-
 		return { ...result, workspacePath };
 	}
 
@@ -45,11 +49,10 @@ export class ClaudeSessionRunner {
 		input: ClaudeConversationInput,
 	): Promise<ClaudeSessionResult> {
 		const result = await runQuery({
-			prompt: buildTurnPrompt(input),
+			prompt: singleTurnMessages(input),
 			workspacePath,
 			sessionId,
 		});
-
 		return { ...result, workspacePath };
 	}
 
@@ -59,16 +62,15 @@ export class ClaudeSessionRunner {
 	): Promise<ClaudeSessionResult> {
 		const workspacePath = await ensureWorkspace(this.options.workspacesRoot);
 		const result = await runQuery({
-			prompt: buildHydrationPrompt(input, transcript),
+			prompt: transcriptMessages(input, transcript),
 			workspacePath,
 		});
-
 		return { ...result, workspacePath };
 	}
 }
 
 async function runQuery(options: {
-	prompt: string;
+	prompt: AsyncIterable<SDKUserMessage>;
 	workspacePath: string;
 	sessionId?: string;
 }): Promise<{ claudeSessionId: string; responseText: string }> {
@@ -84,6 +86,7 @@ async function runQuery(options: {
 		options: {
 			cwd: options.workspacePath,
 			permissionMode: "bypassPermissions",
+			systemPrompt: SYSTEM_PROMPT,
 			...(options.sessionId ? { resume: options.sessionId } : {}),
 		},
 	})) {
@@ -114,46 +117,111 @@ async function runQuery(options: {
 	return { claudeSessionId, responseText: responseText.trim() };
 }
 
+// For new conversations and session resumes: yields a single user message.
+async function* singleTurnMessages(
+	input: ClaudeConversationInput,
+): AsyncGenerator<SDKUserMessage> {
+	yield {
+		type: "user",
+		message: buildUserMessageParam(input),
+		parent_tool_use_id: null,
+	};
+}
+
+// For transcript rebuilds: injects conversation history then the current message.
+async function* transcriptMessages(
+	input: ClaudeConversationInput,
+	transcript: SlackTranscriptMessage[],
+): AsyncGenerator<SDKUserMessage> {
+	let firstUserEmitted = false;
+	let latestFound = false;
+
+	for (const msg of transcript) {
+		const isLatest = msg.ts === input.messageTs;
+
+		if (msg.role === "assistant") {
+			// Anthropic API requires a user message before any assistant message.
+			if (!firstUserEmitted) {
+				yield historyMessage({ role: "user", content: "(beginning of conversation)" });
+				firstUserEmitted = true;
+			}
+			yield historyMessage({
+				role: "assistant",
+				content: [{ type: "text", text: msg.text }],
+			});
+		} else {
+			firstUserEmitted = true;
+			if (isLatest) {
+				latestFound = true;
+				yield {
+					type: "user",
+					message: buildUserMessageParam(input),
+					parent_tool_use_id: null,
+				};
+			} else {
+				yield historyMessage({
+					role: "user",
+					content: [{ type: "text", text: msg.text }],
+				});
+			}
+		}
+	}
+
+	// Fallback: current message was not found in transcript.
+	if (!latestFound) {
+		if (!firstUserEmitted) {
+			yield historyMessage({ role: "user", content: "(beginning of conversation)" });
+		}
+		yield {
+			type: "user",
+			message: buildUserMessageParam(input),
+			parent_tool_use_id: null,
+		};
+	}
+}
+
+function historyMessage(message: MessageParam): SDKUserMessage {
+	return {
+		type: "user",
+		message,
+		parent_tool_use_id: null,
+		isSynthetic: true,
+		shouldQuery: false,
+	};
+}
+
+function buildUserMessageParam(input: ClaudeConversationInput): MessageParam {
+	const blocks: Array<{ type: "text"; text: string }> = [
+		{
+			type: "text",
+			text: [
+				"source=slack",
+				`channel=${input.channel}`,
+				`thread_ts=${input.rootThreadTs}`,
+				`message_ts=${input.messageTs}`,
+				`user_id=${input.userId}`,
+			].join("\n"),
+		},
+		{
+			type: "text",
+			text: input.text,
+		},
+	];
+
+	if (input.attachmentDir && input.attachmentFiles?.length) {
+		blocks.push({
+			type: "text",
+			text: [
+				`Attached files are saved to: ${input.attachmentDir}`,
+				...input.attachmentFiles.map((f) => `- ${f}`),
+			].join("\n"),
+		});
+	}
+
+	return { role: "user", content: blocks };
+}
+
 async function ensureWorkspace(workspacesRoot: string): Promise<string> {
 	await mkdir(workspacesRoot, { recursive: true });
 	return workspacesRoot;
-}
-
-function buildTurnPrompt(input: ClaudeConversationInput): string {
-	return [
-		"You are a Slack assistant replying inside an existing Slack thread.",
-		"Use the prior conversation context when available.",
-		"Reply with only the message body that should be posted back to Slack.",
-		"",
-		"source=slack",
-		`channel=${input.channel}`,
-		`root_thread_ts=${input.rootThreadTs}`,
-		`message_ts=${input.messageTs}`,
-		`user_id=${input.userId}`,
-		"",
-		"Latest user message:",
-		input.text,
-	].join("\n");
-}
-
-function buildHydrationPrompt(
-	input: ClaudeConversationInput,
-	transcript: SlackTranscriptMessage[],
-): string {
-	const formattedTranscript = formatTranscript(transcript);
-
-	return [
-		"You are restoring context for a Slack assistant conversation.",
-		"Read the full Slack thread transcript below and answer the latest user message.",
-		"Reply with only the message body that should be posted back to Slack.",
-		"",
-		"source=slack",
-		`channel=${input.channel}`,
-		`root_thread_ts=${input.rootThreadTs}`,
-		`message_ts=${input.messageTs}`,
-		`user_id=${input.userId}`,
-		"",
-		"Slack thread transcript:",
-		formattedTranscript,
-	].join("\n");
 }
