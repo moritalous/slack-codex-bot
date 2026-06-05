@@ -1,7 +1,5 @@
-import { spawn } from "node:child_process";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import { mkdir } from "node:fs/promises";
-import path from "node:path";
-import { repoRoot } from "./paths";
 import {
 	formatTranscript,
 	type SlackTranscriptMessage,
@@ -26,8 +24,6 @@ type ClaudeSessionRunnerOptions = {
 	workspacesRoot: string;
 };
 
-const claudeBin = path.join(repoRoot, "node_modules", ".bin", "claude");
-
 export class ClaudeSessionRunner {
 	constructor(private readonly options: ClaudeSessionRunnerOptions) {}
 
@@ -35,16 +31,12 @@ export class ClaudeSessionRunner {
 		input: ClaudeConversationInput,
 	): Promise<ClaudeSessionResult> {
 		const workspacePath = await ensureWorkspace(this.options.workspacesRoot);
-		const result = await this.runClaudeSdk({
+		const result = await runQuery({
 			prompt: buildTurnPrompt(input),
-			workingDirectory: workspacePath,
+			workspacePath,
 		});
 
-		return {
-			responseText: result.responseText,
-			claudeSessionId: result.claudeSessionId,
-			workspacePath,
-		};
+		return { ...result, workspacePath };
 	}
 
 	async runExistingConversation(
@@ -52,17 +44,13 @@ export class ClaudeSessionRunner {
 		workspacePath: string,
 		input: ClaudeConversationInput,
 	): Promise<ClaudeSessionResult> {
-		const result = await this.runClaudeSdk({
+		const result = await runQuery({
 			prompt: buildTurnPrompt(input),
-			workingDirectory: workspacePath,
+			workspacePath,
 			sessionId,
 		});
 
-		return {
-			responseText: result.responseText,
-			claudeSessionId: result.claudeSessionId,
-			workspacePath,
-		};
+		return { ...result, workspacePath };
 	}
 
 	async rebuildConversationFromTranscript(
@@ -70,130 +58,60 @@ export class ClaudeSessionRunner {
 		transcript: SlackTranscriptMessage[],
 	): Promise<ClaudeSessionResult> {
 		const workspacePath = await ensureWorkspace(this.options.workspacesRoot);
-		const result = await this.runClaudeSdk({
+		const result = await runQuery({
 			prompt: buildHydrationPrompt(input, transcript),
-			workingDirectory: workspacePath,
+			workspacePath,
 		});
 
-		return {
-			responseText: result.responseText,
-			claudeSessionId: result.claudeSessionId,
-			workspacePath,
-		};
+		return { ...result, workspacePath };
 	}
+}
 
-	private runClaudeSdk(options: {
-		prompt: string;
-		workingDirectory: string;
-		sessionId?: string;
-	}): Promise<{ claudeSessionId: string; responseText: string }> {
-		console.error(
-			`[claude] ${options.sessionId ? "Resuming" : "Starting"} session in ${options.workingDirectory}`,
-		);
+async function runQuery(options: {
+	prompt: string;
+	workspacePath: string;
+	sessionId?: string;
+}): Promise<{ claudeSessionId: string; responseText: string }> {
+	console.error(
+		`[claude] ${options.sessionId ? "Resuming" : "Starting"} session in ${options.workspacePath}`,
+	);
 
-		const args = [
-			"--print",
-			"--output-format",
-			"stream-json",
-			"--dangerously-skip-permissions",
-			"--input-format",
-			"text",
-		];
+	let claudeSessionId = "";
+	let responseText = "";
 
-		if (options.sessionId) {
-			args.push("--resume", options.sessionId);
+	for await (const message of query({
+		prompt: options.prompt,
+		options: {
+			cwd: options.workspacePath,
+			permissionMode: "bypassPermissions",
+			...(options.sessionId ? { resume: options.sessionId } : {}),
+		},
+	})) {
+		console.error(`[claude] Message: ${message.type}`);
+
+		if (message.type === "system" && message.subtype === "init") {
+			claudeSessionId = message.session_id;
+			console.error(`[claude] Session ID: ${claudeSessionId}`);
 		}
 
-		return new Promise((resolve, reject) => {
-			const proc = spawn(claudeBin, args, {
-				cwd: options.workingDirectory,
-				env: process.env,
-			});
-
-			proc.stdin.write(options.prompt);
-			proc.stdin.end();
-
-			let buffer = "";
-			let claudeSessionId = "";
-			let responseText = "";
-			let rejected = false;
-
-			proc.stdout.on("data", (chunk: Buffer) => {
-				buffer += chunk.toString();
-				const lines = buffer.split("\n");
-				buffer = lines.pop() ?? "";
-
-				for (const line of lines) {
-					if (!line.trim()) continue;
-					let msg: Record<string, unknown>;
-					try {
-						msg = JSON.parse(line) as Record<string, unknown>;
-					} catch {
-						continue;
-					}
-
-					console.error(`[claude] Message: ${msg.type}`);
-
-					if (msg.type === "system" && msg.subtype === "init") {
-						claudeSessionId = msg.session_id as string;
-						console.error(`[claude] Session ID: ${claudeSessionId}`);
-					}
-
-					if (msg.type === "assistant") {
-						const message = msg.message as {
-							content: Array<{ type: string; text?: string }>;
-						};
-						for (const block of message.content) {
-							if (block.type === "text" && block.text) {
-								responseText = block.text;
-							}
-						}
-					}
-
-					if (msg.type === "result") {
-						if (msg.subtype !== "success") {
-							rejected = true;
-							reject(
-								new Error(`Claude session ended with error: ${msg.subtype}`),
-							);
-							return;
-						}
-						if (msg.result) {
-							responseText = msg.result as string;
-						}
-					}
-				}
-			});
-
-			proc.stderr.on("data", (chunk: Buffer) => {
-				console.error(`[claude stderr] ${chunk.toString().trimEnd()}`);
-			});
-
-			proc.on("error", (err) => {
-				if (!rejected) {
-					rejected = true;
-					reject(err);
-				}
-			});
-
-			proc.on("close", (code) => {
-				if (rejected) return;
-
-				if (code !== 0) {
-					reject(new Error(`Claude process exited with code ${code}`));
-					return;
-				}
-
-				if (!claudeSessionId) {
-					reject(new Error("Claude did not produce a session id"));
-					return;
-				}
-
-				console.error(`[claude] Response length: ${responseText.trim().length}`);
-				resolve({ claudeSessionId, responseText: responseText.trim() });
-			});
-		});
+		if (message.type === "result") {
+			claudeSessionId = message.session_id;
+			if (message.subtype === "success") {
+				responseText = message.result;
+			} else {
+				throw new Error(
+					`Claude session ended with error: ${message.subtype} — ${("errors" in message ? message.errors : []).join(", ")}`,
+				);
+			}
+		}
 	}
+
+	if (!claudeSessionId) {
+		throw new Error("Claude did not produce a session id");
+	}
+
+	console.error(`[claude] Response length: ${responseText.trim().length}`);
+	return { claudeSessionId, responseText: responseText.trim() };
 }
 
 async function ensureWorkspace(workspacesRoot: string): Promise<string> {

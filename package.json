@@ -22,7 +22,7 @@
 		"typescript": "^6.0.3"
 	},
 	"dependencies": {
-		"@anthropic-ai/claude-code": "latest",
+		"@anthropic-ai/claude-agent-sdk": "latest",
 		"@n8n/cli": "^0.5.0",
 		"@slack/bolt": "^4.7.2"
 	}
