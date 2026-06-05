@@ -9,7 +9,8 @@ export type ClaudeConversationInput = {
 	messageTs: string;
 	userId: string;
 	text: string;
-	attachmentDir?: string;
+	inputDir?: string;
+	outputDir?: string;
 	attachmentFiles?: string[];
 };
 
@@ -27,6 +28,7 @@ type ClaudeSessionRunnerOptions = {
 const SYSTEM_PROMPT = [
 	"You are a Slack assistant replying inside a Slack thread.",
 	"Reply with only the message body to be posted back to Slack.",
+	"When the user provides an output directory path, save any files you want to return there instead of displaying their contents inline.",
 ].join("\n");
 
 export class ClaudeSessionRunner {
@@ -208,13 +210,20 @@ function buildUserMessageParam(input: ClaudeConversationInput): MessageParam {
 		},
 	];
 
-	if (input.attachmentDir && input.attachmentFiles?.length) {
+	if (input.inputDir && input.attachmentFiles?.length) {
 		blocks.push({
 			type: "text",
 			text: [
-				`Attached files are saved to: ${input.attachmentDir}`,
+				`Input files are in: ${input.inputDir}`,
 				...input.attachmentFiles.map((f) => `- ${f}`),
 			].join("\n"),
+		});
+	}
+
+	if (input.outputDir) {
+		blocks.push({
+			type: "text",
+			text: `Output directory (save files here to send them back via Slack): ${input.outputDir}`,
 		});
 	}
 

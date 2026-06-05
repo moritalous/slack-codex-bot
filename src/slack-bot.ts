@@ -1,3 +1,4 @@
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type { App, SlackEventMiddlewareArgs } from "@slack/bolt";
 import type { MessageEvent } from "@slack/types";
@@ -187,6 +188,15 @@ async function handleConversation(
 				result.responseText || "空の応答は返せないため、回答を省略しました。",
 		});
 		console.error(`[slack] Response posted`);
+
+		if (claudeInput.outputDir) {
+			await sendOutputFiles(
+				client,
+				context.channel,
+				context.rootThreadTs,
+				claudeInput.outputDir,
+			);
+		}
 	} catch (error) {
 		console.error(`[slack] Error:`, error);
 		app.logger.error("Failed to handle Slack conversation", error);
@@ -240,16 +250,53 @@ async function buildClaudeInput(
 		return base;
 	}
 
-	const attachmentDir = path.join(workspacesRoot, context.messageTs);
-	const attachmentFiles = await downloadSlackFiles(
-		context.files,
-		attachmentDir,
-		token,
-	);
+	const baseDir = path.join(workspacesRoot, context.messageTs);
+	const inputDir = path.join(baseDir, "input");
+	const outputDir = path.join(baseDir, "output");
+
+	const [attachmentFiles] = await Promise.all([
+		downloadSlackFiles(context.files, inputDir, token),
+		import("node:fs/promises").then((fs) =>
+			fs.mkdir(outputDir, { recursive: true }),
+		),
+	]);
 
 	return attachmentFiles.length
-		? { ...base, attachmentDir, attachmentFiles }
+		? { ...base, inputDir, outputDir, attachmentFiles }
 		: base;
+}
+
+async function sendOutputFiles(
+	client: WebClient,
+	channel: string,
+	threadTs: string,
+	outputDir: string,
+): Promise<void> {
+	let filenames: string[];
+	try {
+		filenames = await readdir(outputDir);
+	} catch {
+		return;
+	}
+
+	if (!filenames.length) return;
+
+	console.error(`[slack] Uploading ${filenames.length} output file(s)`);
+
+	for (const filename of filenames) {
+		const filePath = path.join(outputDir, filename);
+		try {
+			await client.filesUploadV2({
+				channel_id: channel,
+				thread_ts: threadTs,
+				file: filePath,
+				filename,
+			});
+			console.error(`[slack] Uploaded: ${filename}`);
+		} catch (err) {
+			console.error(`[slack] Failed to upload ${filename}:`, err);
+		}
+	}
 }
 
 async function resolveClaudeResponse(
