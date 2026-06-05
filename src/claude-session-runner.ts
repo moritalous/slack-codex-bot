@@ -10,7 +10,7 @@ export type ClaudeConversationInput = {
 	userId: string;
 	text: string;
 	inputDir?: string;
-	outputDir?: string;
+	outputDir: string;
 	attachmentFiles?: string[];
 };
 

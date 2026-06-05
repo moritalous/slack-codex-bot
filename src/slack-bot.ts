@@ -189,14 +189,12 @@ async function handleConversation(
 		});
 		console.error(`[slack] Response posted`);
 
-		if (claudeInput.outputDir) {
-			await sendOutputFiles(
-				client,
-				context.channel,
-				context.rootThreadTs,
-				claudeInput.outputDir,
-			);
-		}
+		await sendOutputFiles(
+			client,
+			context.channel,
+			context.rootThreadTs,
+			claudeInput.outputDir,
+		);
 	} catch (error) {
 		console.error(`[slack] Error:`, error);
 		app.logger.error("Failed to handle Slack conversation", error);
@@ -232,38 +230,41 @@ async function handleConversation(
 async function buildClaudeInput(
 	context: ConversationContext,
 ): Promise<ClaudeConversationInput> {
+	const baseDir = path.join(workspacesRoot, context.messageTs);
+	const outputDir = path.join(baseDir, "output");
+
 	const base: ClaudeConversationInput = {
 		channel: context.channel,
 		rootThreadTs: context.rootThreadTs,
 		messageTs: context.messageTs,
 		userId: context.userId,
 		text: context.text,
+		outputDir,
 	};
+	await import("node:fs/promises").then((fs) =>
+		fs.mkdir(outputDir, { recursive: true }),
+	);
 
 	if (!context.files?.length) {
-		return base;
+		return { ...base, outputDir };
 	}
 
 	const token = process.env.SLACK_BOT_TOKEN;
 	if (!token) {
 		console.error("[slack] SLACK_BOT_TOKEN not set; skipping file download");
-		return base;
+		return { ...base, outputDir };
 	}
 
-	const baseDir = path.join(workspacesRoot, context.messageTs);
 	const inputDir = path.join(baseDir, "input");
-	const outputDir = path.join(baseDir, "output");
-
-	const [attachmentFiles] = await Promise.all([
-		downloadSlackFiles(context.files, inputDir, token),
-		import("node:fs/promises").then((fs) =>
-			fs.mkdir(outputDir, { recursive: true }),
-		),
-	]);
+	const attachmentFiles = await downloadSlackFiles(
+		context.files,
+		inputDir,
+		token,
+	);
 
 	return attachmentFiles.length
 		? { ...base, inputDir, outputDir, attachmentFiles }
-		: base;
+		: { ...base, outputDir };
 }
 
 async function sendOutputFiles(
