@@ -9,9 +9,9 @@ import {
 } from "./claude-session-runner";
 import { repoRoot, threadStateFilePath, workspacesRoot } from "./paths";
 import {
-	type SlackFile,
 	downloadSlackFiles,
 	fetchSlackTranscript,
+	type SlackFile,
 } from "./slack-transcript";
 import { ThreadStateStore } from "./thread-state-store";
 
@@ -230,7 +230,7 @@ async function handleConversation(
 async function buildClaudeInput(
 	context: ConversationContext,
 ): Promise<ClaudeConversationInput> {
-	const baseDir = path.join(workspacesRoot, context.messageTs);
+	const baseDir = path.join(workspacesRoot, "work", context.messageTs);
 	const outputDir = path.join(baseDir, "output");
 
 	const base: ClaudeConversationInput = {

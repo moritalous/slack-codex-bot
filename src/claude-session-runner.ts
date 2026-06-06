@@ -1,6 +1,6 @@
+import { mkdir } from "node:fs/promises";
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { MessageParam } from "@anthropic-ai/sdk/resources";
-import { mkdir } from "node:fs/promises";
 import type { SlackTranscriptMessage } from "./slack-transcript";
 
 export type ClaudeConversationInput = {
@@ -88,11 +88,26 @@ async function runQuery(options: {
 		options: {
 			cwd: options.workspacePath,
 			permissionMode: "bypassPermissions",
-			systemPrompt: SYSTEM_PROMPT,
+			systemPrompt: {
+				type: "preset",
+				preset: "claude_code",
+				append: SYSTEM_PROMPT,
+			},
+			tools: { type: "preset", preset: "claude_code" },
 			...(options.sessionId ? { resume: options.sessionId } : {}),
 		},
 	})) {
-		console.error(`[claude] Message: ${message.type}`);
+		let msgInfo: string = message.type;
+		if ("subtype" in message) {
+			msgInfo = `${message.type}(${message.subtype})`;
+			if (message.type === "system" && message.subtype === "thinking_tokens") {
+				msgInfo += ` tokens=${message.estimated_tokens}`;
+			}
+		}
+		if (message.type === "result") {
+			msgInfo += ` duration=${message.duration_ms}ms`;
+		}
+		console.error(`[claude] Message: ${msgInfo}`);
 
 		if (message.type === "system" && message.subtype === "init") {
 			claudeSessionId = message.session_id;
@@ -144,7 +159,10 @@ async function* transcriptMessages(
 		if (msg.role === "assistant") {
 			// Anthropic API requires a user message before any assistant message.
 			if (!firstUserEmitted) {
-				yield historyMessage({ role: "user", content: "(beginning of conversation)" });
+				yield historyMessage({
+					role: "user",
+					content: "(beginning of conversation)",
+				});
 				firstUserEmitted = true;
 			}
 			yield historyMessage({
@@ -172,7 +190,10 @@ async function* transcriptMessages(
 	// Fallback: current message was not found in transcript.
 	if (!latestFound) {
 		if (!firstUserEmitted) {
-			yield historyMessage({ role: "user", content: "(beginning of conversation)" });
+			yield historyMessage({
+				role: "user",
+				content: "(beginning of conversation)",
+			});
 		}
 		yield {
 			type: "user",

@@ -17,13 +17,13 @@
 		"n8n:stop": "bun run --filter 'n8n*' n8n:stop"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.4.14",
+		"@biomejs/biome": "^2.4.16",
 		"@types/bun": "latest",
 		"typescript": "^6.0.3"
 	},
 	"dependencies": {
 		"@anthropic-ai/claude-agent-sdk": "latest",
 		"@n8n/cli": "^0.5.0",
-		"@slack/bolt": "^4.7.2"
+		"@slack/bolt": "^4.7.3"
 	}
 }

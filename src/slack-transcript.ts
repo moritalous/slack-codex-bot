@@ -77,8 +77,7 @@ export async function fetchSlackTranscript(
 			ts: message.ts ?? "",
 			threadTs: message.thread_ts ?? message.ts ?? "",
 			userId: message.user ?? null,
-			role:
-				message.user === botUserId || message.bot_id ? "assistant" : "user",
+			role: message.user === botUserId || message.bot_id ? "assistant" : "user",
 			text: message.text ?? "",
 			files: message.files
 				?.filter(
