@@ -1,12 +1,18 @@
+import { readdir } from "node:fs/promises";
+import path from "node:path";
 import type { App, SlackEventMiddlewareArgs } from "@slack/bolt";
 import type { MessageEvent } from "@slack/types";
 import type { WebClient } from "@slack/web-api";
 import {
-	type CodexConversationInput,
-	CodexSessionRunner,
-} from "./codex-session-runner";
+	type ClaudeConversationInput,
+	ClaudeSessionRunner,
+} from "./claude-session-runner";
 import { repoRoot, threadStateFilePath, workspacesRoot } from "./paths";
-import { fetchSlackTranscript } from "./slack-transcript";
+import {
+	downloadSlackFiles,
+	fetchSlackTranscript,
+	type SlackFile,
+} from "./slack-transcript";
 import { ThreadStateStore } from "./thread-state-store";
 
 const placeholderText = "考え中です...";
@@ -21,6 +27,7 @@ type ConversationContext = {
 	messageTs: string;
 	userId: string;
 	text: string;
+	files?: SlackFile[];
 };
 
 type BotIdentity = {
@@ -28,7 +35,7 @@ type BotIdentity = {
 };
 
 const stateStore = new ThreadStateStore(threadStateFilePath);
-const codexRunner = new CodexSessionRunner({
+const claudeRunner = new ClaudeSessionRunner({
 	repoRoot,
 	workspacesRoot,
 });
@@ -90,6 +97,7 @@ function getDmContext(message: MessageEvent): ConversationContext | null {
 		messageTs: message.ts,
 		userId: message.user,
 		text: message.text.trim(),
+		files: extractFiles(message),
 	};
 }
 
@@ -105,7 +113,30 @@ function getMentionContext(event: AppMentionEvent): ConversationContext | null {
 		messageTs: event.ts,
 		userId: event.user,
 		text: sanitizedText,
+		files: extractFiles(event),
 	};
+}
+
+function extractFiles(event: object): SlackFile[] | undefined {
+	const raw = (event as { files?: unknown[] }).files;
+	if (!raw?.length) return undefined;
+
+	const result = (raw as Array<Record<string, unknown>>)
+		.filter(
+			(f): f is Record<string, unknown> & { id: string; url_private: string } =>
+				typeof f.id === "string" && typeof f.url_private === "string",
+		)
+		.map((f) => ({
+			id: f.id,
+			name: typeof f.name === "string" ? f.name : null,
+			mimetype:
+				typeof f.mimetype === "string"
+					? f.mimetype
+					: "application/octet-stream",
+			urlPrivate: f.url_private,
+		}));
+
+	return result.length ? result : undefined;
 }
 
 async function handleConversation(
@@ -137,12 +168,14 @@ async function handleConversation(
 		placeholderTs = placeholder.ts;
 		console.error(`[slack] Placeholder posted: ${placeholderTs}`);
 
-		console.error(`[slack] Calling resolveCodexResponse...`);
-		const result = await resolveCodexResponse(
+		const claudeInput = await buildClaudeInput(context);
+
+		console.error(`[slack] Calling resolveClaudeResponse...`);
+		const result = await resolveClaudeResponse(
 			client,
 			botIdentity,
 			conversationKey,
-			context,
+			claudeInput,
 		);
 		console.error(
 			`[slack] Got response: ${result.responseText.substring(0, 100)}...`,
@@ -155,6 +188,13 @@ async function handleConversation(
 				result.responseText || "空の応答は返せないため、回答を省略しました。",
 		});
 		console.error(`[slack] Response posted`);
+
+		await sendOutputFiles(
+			client,
+			context.channel,
+			context.rootThreadTs,
+			claudeInput.outputDir,
+		);
 	} catch (error) {
 		console.error(`[slack] Error:`, error);
 		app.logger.error("Failed to handle Slack conversation", error);
@@ -187,20 +227,86 @@ async function handleConversation(
 	}
 }
 
-async function resolveCodexResponse(
-	client: WebClient,
-	botIdentity: BotIdentity,
-	conversationKey: string,
+async function buildClaudeInput(
 	context: ConversationContext,
-) {
-	const storedState = await stateStore.get(conversationKey);
-	const codexInput: CodexConversationInput = {
+): Promise<ClaudeConversationInput> {
+	const baseDir = path.join(workspacesRoot, "work", context.messageTs);
+	const outputDir = path.join(baseDir, "output");
+
+	const base: ClaudeConversationInput = {
 		channel: context.channel,
 		rootThreadTs: context.rootThreadTs,
 		messageTs: context.messageTs,
 		userId: context.userId,
 		text: context.text,
+		outputDir,
 	};
+	await import("node:fs/promises").then((fs) =>
+		fs.mkdir(outputDir, { recursive: true }),
+	);
+
+	if (!context.files?.length) {
+		return { ...base, outputDir };
+	}
+
+	const token = process.env.SLACK_BOT_TOKEN;
+	if (!token) {
+		console.error("[slack] SLACK_BOT_TOKEN not set; skipping file download");
+		return { ...base, outputDir };
+	}
+
+	const inputDir = path.join(baseDir, "input");
+	const attachmentFiles = await downloadSlackFiles(
+		context.files,
+		inputDir,
+		token,
+	);
+
+	return attachmentFiles.length
+		? { ...base, inputDir, outputDir, attachmentFiles }
+		: { ...base, outputDir };
+}
+
+async function sendOutputFiles(
+	client: WebClient,
+	channel: string,
+	threadTs: string,
+	outputDir: string,
+): Promise<void> {
+	let filenames: string[];
+	try {
+		filenames = await readdir(outputDir);
+	} catch {
+		return;
+	}
+
+	if (!filenames.length) return;
+
+	console.error(`[slack] Uploading ${filenames.length} output file(s)`);
+
+	for (const filename of filenames) {
+		const filePath = path.join(outputDir, filename);
+		try {
+			await client.filesUploadV2({
+				channel_id: channel,
+				thread_ts: threadTs,
+				file: filePath,
+				filename,
+			});
+			console.error(`[slack] Uploaded: ${filename}`);
+		} catch (err) {
+			console.error(`[slack] Failed to upload ${filename}:`, err);
+		}
+	}
+}
+
+async function resolveClaudeResponse(
+	client: WebClient,
+	botIdentity: BotIdentity,
+	conversationKey: string,
+	context: ClaudeConversationInput,
+) {
+	const storedState = await stateStore.get(conversationKey);
 
 	if (!storedState) {
 		if (context.rootThreadTs !== context.messageTs) {
@@ -208,14 +314,14 @@ async function resolveCodexResponse(
 				client,
 				botIdentity,
 				conversationKey,
-				codexInput,
+				context,
 			);
 		}
 
-		const result = await codexRunner.runNewConversation(codexInput);
+		const result = await claudeRunner.runNewConversation(context);
 		await persistState(
 			conversationKey,
-			result.codexThreadId,
+			result.claudeSessionId,
 			result.workspacePath,
 			context,
 		);
@@ -224,14 +330,14 @@ async function resolveCodexResponse(
 	}
 
 	try {
-		const result = await codexRunner.runExistingConversation(
-			storedState.codexThreadId,
+		const result = await claudeRunner.runExistingConversation(
+			storedState.claudeSessionId,
 			storedState.workspacePath,
-			codexInput,
+			context,
 		);
 		await persistState(
 			conversationKey,
-			result.codexThreadId,
+			result.claudeSessionId,
 			result.workspacePath,
 			context,
 		);
@@ -242,7 +348,7 @@ async function resolveCodexResponse(
 			client,
 			botIdentity,
 			conversationKey,
-			codexInput,
+			context,
 		);
 	}
 }
@@ -251,7 +357,7 @@ async function rebuildFromSlackTranscript(
 	client: WebClient,
 	botIdentity: BotIdentity,
 	conversationKey: string,
-	input: CodexConversationInput,
+	input: ClaudeConversationInput,
 ) {
 	const transcript = await fetchSlackTranscript(
 		client,
@@ -259,13 +365,13 @@ async function rebuildFromSlackTranscript(
 		input.rootThreadTs,
 		botIdentity.userId,
 	);
-	const result = await codexRunner.rebuildConversationFromTranscript(
+	const result = await claudeRunner.rebuildConversationFromTranscript(
 		input,
 		transcript,
 	);
 	await persistState(
 		conversationKey,
-		result.codexThreadId,
+		result.claudeSessionId,
 		result.workspacePath,
 		input,
 	);
@@ -275,9 +381,9 @@ async function rebuildFromSlackTranscript(
 
 async function persistState(
 	conversationKey: string,
-	codexThreadId: string,
+	claudeSessionId: string,
 	workspacePath: string,
-	context: Pick<ConversationContext, "channel" | "rootThreadTs">,
+	context: Pick<ClaudeConversationInput, "channel" | "rootThreadTs">,
 ): Promise<void> {
 	const now = new Date().toISOString();
 	const existing = await stateStore.get(conversationKey);
@@ -285,7 +391,7 @@ async function persistState(
 	await stateStore.set(conversationKey, {
 		channel: context.channel,
 		rootThreadTs: context.rootThreadTs,
-		codexThreadId,
+		claudeSessionId,
 		workspacePath,
 		createdAt: existing?.createdAt ?? now,
 		updatedAt: now,

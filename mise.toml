@@ -2,5 +2,8 @@
 bun = "latest"
 gitleaks = "latest"
 
+[settings]
+minimum_release_age = "7d"  # only install versions released more than 7 days ago
+
 [env]
 _.file = ".env"

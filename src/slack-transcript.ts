@@ -1,4 +1,13 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import type { WebClient } from "@slack/web-api";
+
+export type SlackFile = {
+	id: string;
+	name: string | null;
+	mimetype: string;
+	urlPrivate: string;
+};
 
 export type SlackTranscriptMessage = {
 	ts: string;
@@ -6,6 +15,7 @@ export type SlackTranscriptMessage = {
 	userId: string | null;
 	role: "user" | "assistant";
 	text: string;
+	files?: SlackFile[];
 };
 
 type SlackMessage = {
@@ -15,6 +25,12 @@ type SlackMessage = {
 	user?: string;
 	bot_id?: string;
 	subtype?: string;
+	files?: Array<{
+		id?: string;
+		name?: string | null;
+		mimetype?: string;
+		url_private?: string;
+	}>;
 };
 
 export async function fetchSlackTranscript(
@@ -63,16 +79,50 @@ export async function fetchSlackTranscript(
 			userId: message.user ?? null,
 			role: message.user === botUserId || message.bot_id ? "assistant" : "user",
 			text: message.text ?? "",
+			files: message.files
+				?.filter(
+					(f): f is typeof f & { id: string; url_private: string } =>
+						typeof f.id === "string" && typeof f.url_private === "string",
+				)
+				.map((f) => ({
+					id: f.id,
+					name: f.name ?? null,
+					mimetype: f.mimetype ?? "application/octet-stream",
+					urlPrivate: f.url_private,
+				})),
 		}));
 }
 
-export function formatTranscript(messages: SlackTranscriptMessage[]): string {
-	return messages
-		.map((message, index) => {
-			const speaker = message.role === "assistant" ? "assistant" : "user";
-			const userSuffix = message.userId ? ` (${message.userId})` : "";
+export async function downloadSlackFiles(
+	files: SlackFile[],
+	destDir: string,
+	token: string,
+): Promise<string[]> {
+	await mkdir(destDir, { recursive: true });
+	const savedNames: string[] = [];
 
-			return `${index + 1}. ${speaker}${userSuffix} [ts=${message.ts}]\n${message.text}`;
-		})
-		.join("\n\n");
+	for (const file of files) {
+		const filename = file.name ?? file.id;
+		if (!filename) continue;
+
+		try {
+			const response = await fetch(file.urlPrivate, {
+				headers: { Authorization: `Bearer ${token}` },
+			});
+			if (!response.ok) {
+				console.error(
+					`[slack] Failed to download file ${filename}: ${response.status}`,
+				);
+				continue;
+			}
+
+			const buffer = await response.arrayBuffer();
+			await writeFile(path.join(destDir, filename), Buffer.from(buffer));
+			savedNames.push(filename);
+		} catch (err) {
+			console.error(`[slack] Error downloading file ${filename}:`, err);
+		}
+	}
+
+	return savedNames;
 }

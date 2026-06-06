@@ -26,10 +26,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .eslintcache
 .cache
 .local
-workspaces
-!workspaces/.agents/
-!workspaces/.agents/skills/
-!workspaces/.agents/skills/**
+
 *.tsbuildinfo
 
 # IntelliJ based IDEs
@@ -37,3 +34,10 @@ workspaces
 
 # Finder (MacOS) folder config
 .DS_Store
+
+###
+
+workspaces/**
+!workspaces/.claude/
+!workspaces/.claude/**
+**.local.json
